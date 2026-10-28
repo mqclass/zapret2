@@ -140,9 +140,13 @@ jobs:
         # 82 ms, zero output lines). The .sys driver is NOT needed here:
         # --dry-run/--version never open the driver, so only the DLL is
         # extracted, same version and URL as upstream Create zip.
+        # -o igncr: a previous run (40706395883, x86_64) died on the
+        # first script line with $'pwd\r': command not found although
+        # this committed file is clean LF, so bash is made CR-tolerant
+        # here instead of chasing the unknown CR source.
         env:
           DIR: ${{ matrix.arch == 'x86_64' && 'x64' || 'x86' }}
-        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        shell: C:\cygwin\bin\bash.exe -eo pipefail -o igncr '{0}'
         run: |
           pwd
           ls -l output/
