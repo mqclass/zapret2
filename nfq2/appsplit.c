@@ -71,14 +71,14 @@
  * Makefile's "*.c" source list keeps working on Linux/BSD/Android.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
-#include <stdint.h>
-
-#include "appsplit.h"
-
+/*
+ * The Windows headers MUST come before any Cygwin libc header here.
+ * stdio.h pulls in sys/select.h, which declares POSIX select(); the
+ * winsock2.h declaration of select() (const TIMEVAL) conflicts with it
+ * and the old (2022-snapshot) x86 Cygwin toolchain rejects the TU with
+ * "conflicting types for 'select'" (build-split run 40697928245).
+ * Same pattern as win.c, which includes <windows.h> first.
+ */
 #ifdef __CYGWIN__
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -87,6 +87,14 @@
 #include <tcpmib.h>
 #include <udpmib.h>
 #endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "appsplit.h"
 
 #define APP_SPLIT_MAX_PATHS	100
 #define APP_SPLIT_PATH_SLOTS	256	/* > 2x max entries: low load */
