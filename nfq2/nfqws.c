@@ -13,6 +13,7 @@
 #include "pools.h"
 #include "timer.h"
 #include "lua.h"
+#include "appsplit.h"
 #include "crypto/aes.h"
 
 #include <stdio.h>
@@ -866,6 +867,8 @@ static int win_main(void)
 	unsigned int n,wa_count;
 	uint64_t bt_next;
 
+	app_split_log_startup();
+
 	// windows emulated fork logic does not cover objects outside of cygwin world. have to daemonize before inits
 	if (params.daemon) daemonize();
 
@@ -990,6 +993,16 @@ static int win_main(void)
 				if (wa[n].Impostor)
 				{
 					DLOG("windivert: passing impostor packet\n");
+					verdict = VERDICT_PASS;
+				}
+				else if (app_split_enabled() &&
+					app_split_decide_packet(wa[n].Outbound, packet, packet_len) == APP_SPLIT_DIRECT)
+				{
+					/* app-split: this flow goes direct. VERDICT_PASS
+					 * reinjects the packet unmodified below, without
+					 * desync and without Lua. All other app-split
+					 * outcomes fall through to ordinary processing. */
+					DLOG("app-split: packet id=%u goes direct\n", id);
 					verdict = VERDICT_PASS;
 				}
 				else
@@ -1859,6 +1872,9 @@ static void exithelp(void)
 		" --wf-raw-filter=<filter>|@<filename>\t\t\t; partial raw windivert filter combined by AND. only one allowed\n"
 		" --wf-filter-lan=0|1\t\t\t\t\t; add excluding filter for non-global IP (default : 1)\n"
 		" --wf-filter-loopback=0|1\t\t\t\t; add excluding filter for loopback (default : 1)\n"
+		" --app-split-mode=allowlist|blocklist\t\t; per-app split tunnelling. absent = disabled, upstream behaviour\n"
+		" --app-split-path=<path>\t\t\t\t; one allowlist/blocklist entry. repeatable, up to 100\n"
+		" --app-split-exclude-pid=<pid>\t\t\t; PID whose traffic bypasses app split (supervisor bridge)\n"
 		" --wf-raw=<filter>|@<filename>\t\t\t\t; full raw windivert filter string or filename. replaces --wf-tcp,--wf-udp,--wf-raw-part\n"
 		" --wf-dup-check=0|1\t\t\t\t\t; 1 (default) = do not allow duplicate winws2 instances with the same wf filter\n"
 		" --wf-save=<filename>\t\t\t\t\t; save windivert filter string to a file and exit\n"
@@ -2061,6 +2077,9 @@ enum opt_indices {
 	IDX_LUA_DESYNC,
 
 #ifdef __CYGWIN__
+	IDX_APP_SPLIT_MODE,
+	IDX_APP_SPLIT_PATH,
+	IDX_APP_SPLIT_EXCLUDE_PID,
 	IDX_WF_IFACE,
 	IDX_WF_L3,
 	IDX_WF_TCP_IN,
@@ -2188,6 +2207,9 @@ static const struct option long_options[] = {
 	[IDX_WF_SAVE] = {"wf-save", required_argument, 0, 0},
 	[IDX_WF_DUP_CHECK] = {"wf-dup-check", optional_argument, 0, 0},
 	[IDX_SSID_FILTER] = {"ssid-filter", required_argument, 0, 0},
+	[IDX_APP_SPLIT_MODE] = {"app-split-mode", required_argument, 0, 0},
+	[IDX_APP_SPLIT_PATH] = {"app-split-path", required_argument, 0, 0},
+	[IDX_APP_SPLIT_EXCLUDE_PID] = {"app-split-exclude-pid", required_argument, 0, 0},
 	[IDX_SSID_FILTER_NEG] = {"ssid-filter-neg", optional_argument, 0, 0},
 	[IDX_NLM_FILTER] = {"nlm-filter", required_argument, 0, 0},
 	[IDX_NLM_FILTER_NEG] = {"nlm-filter-neg", optional_argument, 0, 0},
@@ -3104,6 +3126,39 @@ fmark_err:
 			break;
 		case IDX_WF_FILTER_LOOPBACK:
 			wf_filter_loopback = !!atoi(optarg);
+			break;
+		case IDX_APP_SPLIT_MODE:
+			if (!app_split_set_mode(optarg))
+			{
+				DLOG_ERR("bad or duplicate app-split-mode '%s' (allowlist|blocklist, given once)\n", optarg);
+				exit_clean(1);
+			}
+			break;
+		case IDX_APP_SPLIT_PATH:
+			if (!app_split_add_path(optarg))
+			{
+				DLOG_ERR("bad app-split-path (list full or path unusable)\n");
+				exit_clean(1);
+			}
+			break;
+		case IDX_APP_SPLIT_EXCLUDE_PID:
+		{
+			/* strtol, not atol: reject trailing junk ("123abc"),
+			 * empty/non-numeric input and out-of-range values
+			 * loudly, like the other app-split arguments. A PID
+			 * is a Windows DWORD, so the range is 1..4294967295. */
+			char *end = NULL;
+			long excl_pid;
+			errno = 0;
+			excl_pid = strtol(optarg, &end, 10);
+			if (errno != 0 || end == optarg || !end || *end != '\0' ||
+				excl_pid <= 0 || excl_pid > 4294967295L)
+			{
+				DLOG_ERR("bad app-split-exclude-pid '%s'\n", optarg);
+				exit_clean(1);
+			}
+			app_split_set_exclude_pid((unsigned long)excl_pid);
+		}
 			break;
 		case IDX_WF_SAVE:
 			strncpy(wf_save_file, optarg, sizeof(wf_save_file));

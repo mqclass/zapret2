@@ -1,0 +1,150 @@
+# Side-by-side build of the app-split fork binary (winws2-split.exe).
+#
+# This is a copy of the upstream build-windows job, with three deliberate
+# differences:
+#  1. The version baked into --version output is PINNED to the fork base
+#     (v1.0.6 / 221d7dff...), not github.ref_name / github.sha, so a
+#     build from feature/app-split still reports the base version.
+#     The binary NAME (winws2-split.exe) is what distinguishes the fork.
+#  2. The artifact is only winws2-split.exe, not a full release zip:
+#     cygwin1.dll and the WinDivert driver files already ship with the
+#     upstream winws2.exe package that runs side by side with it.
+#  3. It runs on pushes to feature/app-split and on manual dispatch
+#     only; it never creates releases. The upstream build.yml is
+#     untouched.
+#
+# Cygwin and LuaJIT pins are identical to upstream build-windows, so a
+# green build here means the fork still builds with the upstream
+# toolchain. It does NOT prove runtime behaviour against live DPI;
+# that needs a Windows machine with the WinDivert driver (see the
+# review report for the open verification list).
+
+name: build-split
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/app-split
+
+jobs:
+  build-windows-split:
+    name: Windows split ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x86_64, x86 ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: zapret2
+
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.arch == 'x86_64' && 'MINGW64' || 'MINGW32' }}
+          install: >-
+            ${{ matrix.arch == 'x86_64' && 'mingw-w64-x86_64-toolchain' || 'mingw-w64-i686-toolchain' }}
+
+      - name: Build ip2net, mdig
+        shell: msys2 {0}
+        run: |
+          export CFLAGS="-DZAPRET_GH_VER=v1.0.6 -DZAPRET_GH_HASH=221d7dff24bfec0cd5ac0a5070b8acef2008af3d"
+          mkdir -p output
+          cd zapret2
+          mingw32-make -C ip2net win
+          mingw32-make -C mdig win
+          cp -a {ip2net/ip2net,mdig/mdig}.exe ../output
+
+      - name: Restore psmisc from cache
+        id: cache-restore-psmisc
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/psmisc
+          key: psmisc-${{ matrix.arch }}
+
+      - name: Set up Cygwin
+        env:
+          PACKAGES: ${{ steps.cache-restore-psmisc.outputs.cache-hit != 'true' && 'cygport gettext-devel libiconv-devel libncurses-devel' || null }}
+        uses: cygwin/cygwin-install-action@v4
+        with:
+          platform: ${{ matrix.arch }}
+          site: ${{ matrix.arch == 'x86_64' && 'http://ctm.crouchingtigerhiddenfruitbat.org/pub/cygwin/circa/64bit/2024/01/30/231215' || 'http://ctm.crouchingtigerhiddenfruitbat.org/pub/cygwin/circa/2022/11/23/063457' }}
+          check-sig: 'false'
+          packages: >-
+            gcc-core
+            make
+            zlib-devel
+            zip
+            unzip
+            wget
+            ${{ env.PACKAGES }}
+
+      - name: Build psmisc
+        if: steps.cache-restore-psmisc.outputs.cache-hit != 'true'
+        env:
+          URL: https://mirrors.kernel.org/sourceware/cygwin/x86_64/release/psmisc
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          export MAKEFLAGS=-j$(nproc) &&
+          mkdir -p psmisc && cd psmisc &&
+          wget -qO- ${URL} | grep -Po 'href=\"\Kpsmisc-(\d+\.)+\d+.+src\.tar\.xz(?=\")' | xargs -I{} wget -O- ${URL}/{} | tar -xJ &&
+          cd psmisc-*.src &&
+          echo CYGCONF_ARGS+=\" --disable-dependency-tracking --disable-nls\" >> psmisc.cygport &&
+          cygport psmisc.cygport prep compile install
+
+      - name: Save psmisc to cache
+        if: steps.cache-restore-psmisc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/psmisc
+          key: psmisc-${{ matrix.arch }}
+
+      - name: Build luajit
+        env:
+          LUAJIT_RELEASE: 2.1-20250826
+          MINSIZE: -Os -flto=auto -ffunction-sections -fdata-sections
+          LDMINSIZE: -Wl,--gc-sections -flto=auto
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          export MAKEFLAGS=-j$(nproc) &&
+          wget -q https://github.com/openresty/luajit2/archive/refs/tags/v${LUAJIT_RELEASE}.tar.gz &&
+          tar -xzf v${LUAJIT_RELEASE}.tar.gz &&
+          rm -f v${LUAJIT_RELEASE}.tar.gz &&
+          make -C luajit2-${LUAJIT_RELEASE} BUILDMODE=static XCFLAGS="-DLUAJIT_USE_SYSMALLOC -DLUAJIT_DISABLE_FFI -ffat-lto-objects" TARGET_CFLAGS="$MINSIZE $CFLAGS" TARGET_LDFLAGS="$LDMINSIZE $LDFLAGS" &&
+          make -C luajit2-${LUAJIT_RELEASE} install
+
+      - name: Build winws2-split
+        env:
+          TARGET: ${{ matrix.arch == 'x86_64' && 'cygwin' || 'cygwin32' }}
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          export MAKEFLAGS=-j$(nproc) &&
+          export CFLAGS="-DZAPRET_GH_VER=v1.0.6 -DZAPRET_GH_HASH=221d7dff24bfec0cd5ac0a5070b8acef2008af3d" &&
+          cd zapret2 &&
+          make -C nfq2 ${TARGET} &&
+          cp -a nfq2/winws2.exe ../output/winws2-split.exe
+
+      - name: Smoke test new flags
+        # --intercept=0 is required: with interception on, --dry-run
+        # still demands a WinDivert filter, which this smoke test does
+        # not (and need not) provide. --version exits during parsing,
+        # before any filter validation, so it needs no such flag.
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: |
+          cp /usr/bin/cygwin1.dll output/
+          ./output/winws2-split.exe --version
+          ./output/winws2-split.exe --intercept=0 --app-split-mode=allowlist --app-split-path='c:\test\app.exe' --dry-run
+          if ./output/winws2-split.exe --intercept=0 --app-split-mode=bogus --dry-run; then
+            echo "ERROR: invalid --app-split-mode was accepted" >&2
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winws2-split-${{ matrix.arch }}
+          path: output/winws2-split.exe
+          if-no-files-found: error
