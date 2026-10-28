@@ -132,9 +132,24 @@ jobs:
         # still demands a WinDivert filter, which this smoke test does
         # not (and need not) provide. --version exits during parsing,
         # before any filter validation, so it needs no such flag.
+        # WinDivert.dll MUST sit next to the exe even for --version:
+        # libwindivert{32,64}.a are import libraries, so WinDivert.dll
+        # is a load-time import resolved before main() runs. Without it
+        # the exe dies in the Windows loader with no output at all and
+        # bash reports exit 127 (build-split run 40697928245, x86_64:
+        # 82 ms, zero output lines). The .sys driver is NOT needed here:
+        # --dry-run/--version never open the driver, so only the DLL is
+        # extracted, same version and URL as upstream Create zip.
+        env:
+          DIR: ${{ matrix.arch == 'x86_64' && 'x64' || 'x86' }}
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
         run: |
+          pwd
+          ls -l output/
+          wget -O WinDivert.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip
+          unzip -j WinDivert.zip "*/${DIR}/WinDivert.dll" -d output
           cp /usr/bin/cygwin1.dll output/
+          ls -l output/
           ./output/winws2-split.exe --version
           ./output/winws2-split.exe --intercept=0 --app-split-mode=allowlist --app-split-path='c:\test\app.exe' --dry-run
           if ./output/winws2-split.exe --intercept=0 --app-split-mode=bogus --dry-run; then
