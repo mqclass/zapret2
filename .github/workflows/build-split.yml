@@ -164,6 +164,41 @@ jobs:
           cygcheck ./output/winws2-split.exe || true
           command -v file >/dev/null 2>&1 || echo "file: NOT AVAILABLE"
           file output/winws2-split.exe output/cygwin1.dll output/WinDivert.dll || true
+          # Probe block (run 40735171801: cygcheck's only unresolved
+          # dependency is WinDivert.dll although the PE32+ x86-64 DLL
+          # sits next to the exe in output/, while x86 smoke passes
+          # with the same layout; the mechanism is invisible from
+          # that log). These probes distinguish the hypotheses in
+          # ONE run. Every probe is failure-proof (if/else or || echo
+          # under -eo pipefail): a probe must never fail this step,
+          # the existing checks below stay authoritative, and their
+          # failure here is expected and informative — what matters
+          # is which probe succeeds. x86 is the control: every probe
+          # must trivially pass there; a failing x86 probe means the
+          # probe itself is broken, not the binary. Probe D (copy to
+          # Cygwin bin) runs LAST among the probes on purpose: it is
+          # the only probe that mutates the environment. Its copy is
+          # removed again right after the probe run, so the existing
+          # checks below still test the original layout (DLL only
+          # next to the exe in output/), exactly as the GUI ships it.
+          # The runner is ephemeral, so no further cleanup is needed.
+          echo "=== probe A: cygcheck -v (where does the loader look?) ==="
+          if cygcheck -v ./output/winws2-split.exe; then echo "probe A: exit=0"; else echo "probe A: exit=$?"; fi
+          echo "=== probe B: output/ on PATH ==="
+          if PATH="$PWD/output:$PATH" ./output/winws2-split.exe --version; then echo "probe B: exit=0"; else echo "probe B: exit=$?"; fi
+          echo "=== probe C: run from inside output/ (cwd search) ==="
+          if (cd output && ./winws2-split.exe --version); then echo "probe C: exit=0"; else echo "probe C: exit=$?"; fi
+          echo "=== probe E: cmd.exe (native Windows loader, no Cygwin exec) ==="
+          if command -v cmd.exe >/dev/null 2>&1; then
+            if cmd.exe /c 'output\winws2-split.exe --version'; then echo "probe E: exit=0"; else echo "probe E: exit=$?"; fi
+          else
+            echo "probe E: cmd.exe NOT AVAILABLE"
+          fi
+          echo "=== probe D: WinDivert.dll copied to Cygwin bin (on PATH) ==="
+          cp output/WinDivert.dll /usr/bin/ && echo "probe D: copy ok" || echo "probe D: copy failed, exit=$?"
+          if ./output/winws2-split.exe --version; then echo "probe D: exit=0"; else echo "probe D: exit=$?"; fi
+          rm -f /usr/bin/WinDivert.dll || echo "probe D: cleanup failed, exit=$?"
+          echo "probe D: copy removed, existing checks test the original layout"
           ./output/winws2-split.exe --version
           ./output/winws2-split.exe --intercept=0 --app-split-mode=allowlist --app-split-path='c:\test\app.exe' --dry-run
           if ./output/winws2-split.exe --intercept=0 --app-split-mode=bogus --dry-run; then
