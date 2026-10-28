@@ -154,6 +154,16 @@ jobs:
           unzip -j WinDivert.zip "*/${DIR}/WinDivert.dll" -d output
           cp /usr/bin/cygwin1.dll output/
           ls -l output/
+          # Run 40714339901, x86_64: --version died with zero output
+          # and exit 127 despite cygwin1.dll + WinDivert.dll present,
+          # so list load-time DLLs and bitness before running the exe.
+          # Each diagnostic ends in || true (or an explicit
+          # NOT AVAILABLE line): a missing tool must not fail this
+          # step, the existing smoke checks below must still run.
+          command -v cygcheck >/dev/null 2>&1 || echo "cygcheck: NOT AVAILABLE"
+          cygcheck ./output/winws2-split.exe || true
+          command -v file >/dev/null 2>&1 || echo "file: NOT AVAILABLE"
+          file output/winws2-split.exe output/cygwin1.dll output/WinDivert.dll || true
           ./output/winws2-split.exe --version
           ./output/winws2-split.exe --intercept=0 --app-split-mode=allowlist --app-split-path='c:\test\app.exe' --dry-run
           if ./output/winws2-split.exe --intercept=0 --app-split-mode=bogus --dry-run; then
