@@ -11,8 +11,10 @@
  *   TCP: GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL) matched on the
  *   full 5-tuple. UDP: GetExtendedUdpTable(UDP_TABLE_OWNER_PID)
  *   matched on the local address/port only, because the UDP owner
- *   table has no remote-endpoint columns; that is still exact for
- *   attribution, since one local socket belongs to one process.
+ *   table has no remote-endpoint columns. Exact and wildcard
+ *   matches attribute only for a single distinct PID: under
+ *   SO_REUSEADDR several processes may share one local
+ *   address + port, and that case is a miss, not a first-row guess.
  * - Attribution happens only on the first outbound packet of a flow.
  *   Inbound packets inherit the cached decision. An inbound packet
  *   with no cached flow is processed ordinarily (never attributed:
@@ -492,22 +494,45 @@ static bool app_split_refresh_table(PVOID *table, DWORD *size, uint64_t *stamp, 
 		err = GetExtendedUdpTable(*table, &sz, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
 	if (err == ERROR_INSUFFICIENT_BUFFER)
 	{
-		PVOID nb = malloc(sz);
-		if (!nb)
+		/* The table grew between reads: reallocate until the fill
+		 * succeeds, bounded so a runaway table cannot spin here
+		 * forever. The new buffer is installed in *table only
+		 * after a successful fill — installing an unfilled
+		 * buffer and returning true would let attribution read
+		 * dwNumEntries and rows past the allocation (the old
+		 * code did exactly that when the second read failed).
+		 * On failure the old snapshot is kept untouched and the
+		 * stamp is NOT updated, so the failed snapshot is never
+		 * presented as fresh; the caller falls back to the stale
+		 * snapshot, or to a miss when there is none. */
+		int attempt;
+		for (attempt = 0; attempt < 4; attempt++)
 		{
-			/* Throttle the retry like any other persistent
-			 * failure: without a stamp update, every packet
-			 * would retry the table read. */
-			*stamp = now;
-			return *table != NULL; /* keep the old snapshot, if any */
+			PVOID nb = malloc(sz);
+			DWORD fill_sz;
+			if (!nb)
+				break;
+			fill_sz = sz;
+			if (tcp)
+				err = GetExtendedTcpTable(nb, &fill_sz, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+			else
+				err = GetExtendedUdpTable(nb, &fill_sz, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+			if (err == NO_ERROR)
+			{
+				free(*table);
+				*table = nb;
+				*size = sz;
+				*stamp = now;
+				return true;
+			}
+			free(nb);
+			if (err != ERROR_INSUFFICIENT_BUFFER)
+				break;
+			/* Table grew again mid-retry: the API wrote the
+			 * newly required size back into fill_sz. */
+			sz = fill_sz;
 		}
-		free(*table);
-		*table = nb;
-		*size = sz;
-		if (tcp)
-			err = GetExtendedTcpTable(*table, &sz, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-		else
-			err = GetExtendedUdpTable(*table, &sz, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+		return *table != NULL; /* stale snapshot beats nothing; else miss */
 	}
 	if (err != NO_ERROR)
 	{
@@ -624,16 +649,33 @@ static bool app_split_attribute(const app_split_key *key, uint64_t now,
 			return false;
 		if (!g_udp_table) return false;
 		t = (MIB_UDPTABLE_OWNER_PID *)g_udp_table;
-		/* Pass 1: exact match on local address + port. */
-		for (i = 0; i < t->dwNumEntries; i++)
+		/* Pass 1: exact match on local address + port. Several
+		 * sockets of different processes may share one local
+		 * address + port (SO_REUSEADDR), so a first match proves
+		 * nothing on its own: attribute only when every exact
+		 * match belongs to a single PID, and miss on distinct
+		 * PIDs — the same rule as the wildcard pass below.
+		 * Duplicate rows of one PID are not ambiguity. */
 		{
-			MIB_UDPROW_OWNER_PID *r = &t->table[i];
-			if (ntohl(r->dwLocalAddr) == key->local_ip &&
-				ntohs((u_short)r->dwLocalPort) == key->local_port)
+			uint32_t exact_pid = 0;
+			DWORD exact_count = 0;
+			for (i = 0; i < t->dwNumEntries; i++)
 			{
-				pid = r->dwOwningPid;
+				MIB_UDPROW_OWNER_PID *r = &t->table[i];
+				if (ntohl(r->dwLocalAddr) == key->local_ip &&
+					ntohs((u_short)r->dwLocalPort) == key->local_port)
+				{
+					if (exact_count == 0)
+						exact_pid = r->dwOwningPid;
+					else if (r->dwOwningPid != exact_pid)
+						return false; /* ambiguous: miss on purpose */
+					exact_count++;
+				}
+			}
+			if (exact_count > 0)
+			{
+				pid = exact_pid;
 				found = true;
-				break;
 			}
 		}
 		if (!found)
