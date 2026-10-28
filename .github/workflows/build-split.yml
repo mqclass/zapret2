@@ -10,8 +10,9 @@
 #     cygwin1.dll and the WinDivert driver files already ship with the
 #     upstream winws2.exe package that runs side by side with it.
 #  3. It runs on pushes to feature/app-split and on manual dispatch
-#     only; it never creates releases. The upstream build.yml is
-#     untouched.
+#     only; a release is created only by pushing a winws2-split-*
+#     tag, whose release job takes the build job's artifacts.
+#     The upstream build.yml is untouched.
 #
 # Cygwin and LuaJIT pins are identical to upstream build-windows, so a
 # green build here means the fork still builds with the upstream
@@ -26,6 +27,8 @@ on:
   push:
     branches:
       - feature/app-split
+    tags:
+      - 'winws2-split-*'
 
 jobs:
   build-windows-split:
@@ -182,3 +185,37 @@ jobs:
           name: winws2-split-${{ matrix.arch }}
           path: output/winws2-split.exe
           if-no-files-found: error
+
+  release:
+    name: Release split binary
+    if: startsWith(github.ref, 'refs/tags/winws2-split-')
+    needs: build-windows-split
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winws2-split-x86_64
+          path: dist/x86_64
+
+      - name: Download x86 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winws2-split-x86
+          path: dist/x86
+
+      - name: Rename x86 binary
+        shell: pwsh
+        run: Copy-Item dist/x86/winws2-split.exe dist/x86/winws2-split-x86.exe
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/x86_64/winws2-split.exe
+            dist/x86/winws2-split-x86.exe
