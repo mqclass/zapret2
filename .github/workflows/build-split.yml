@@ -3,7 +3,7 @@
 # This is a copy of the upstream build-windows job, with three deliberate
 # differences:
 #  1. The version baked into --version output is PINNED to the fork base
-#     (v1.0.6 / 221d7dff...), not github.ref_name / github.sha, so a
+#     (v1.0.7 / 038c97e5...), not github.ref_name / github.sha, so a
 #     build from feature/app-split still reports the base version.
 #     The binary NAME (winws2-split.exe) is what distinguishes the fork.
 #  2. The artifact is only winws2-split.exe, not a full release zip:
@@ -54,7 +54,7 @@ jobs:
       - name: Build ip2net, mdig
         shell: msys2 {0}
         run: |
-          export CFLAGS="-DZAPRET_GH_VER=v1.0.6 -DZAPRET_GH_HASH=221d7dff24bfec0cd5ac0a5070b8acef2008af3d"
+          export CFLAGS="-DZAPRET_GH_VER=v1.0.7 -DZAPRET_GH_HASH=038c97e5819df10f8e8c22a2f1fffe57f2f7379b"
           mkdir -p output
           cd zapret2
           mingw32-make -C ip2net win
@@ -125,7 +125,7 @@ jobs:
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
         run: >-
           export MAKEFLAGS=-j$(nproc) &&
-          export CFLAGS="-DZAPRET_GH_VER=v1.0.6 -DZAPRET_GH_HASH=221d7dff24bfec0cd5ac0a5070b8acef2008af3d" &&
+          export CFLAGS="-DZAPRET_GH_VER=v1.0.7 -DZAPRET_GH_HASH=038c97e5819df10f8e8c22a2f1fffe57f2f7379b" &&
           cd zapret2 &&
           make -C nfq2 ${TARGET} &&
           cp -a nfq2/winws2.exe ../output/winws2-split.exe
